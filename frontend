@@ -1,0 +1,207 @@
+# frontend_mar.py
+
+import streamlit as st
+import backend_mar as db
+from datetime import date
+
+# --- Main Application Logic ---
+
+st.set_page_config(
+    page_title="Personal Fitness Tracker",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize session state for user and view management
+if 'user' not in st.session_state:
+    st.session_state.user = None
+if 'view' not in st.session_state:
+    st.session_state.view = 'profile'
+if 'show_register_form' not in st.session_state:
+    st.session_state.show_register_form = False
+
+def set_view(view_name):
+    """Changes the current view of the application."""
+    st.session_state.view = view_name
+    st.session_state.show_register_form = False # Hide registration form on view change
+
+def login_page():
+    """Handles user login and registration."""
+    st.title("Welcome to Your Fitness Tracker 💪")
+    st.subheader("Login or Register")
+
+    # The login form
+    with st.form("login_form"):
+        email = st.text_input("Enter your email:")
+        submitted = st.form_submit_button("Log In")
+
+        if submitted:
+            user = db.get_user_by_email(email)
+            if user:
+                st.session_state.user = user
+                st.session_state.show_register_form = False
+                st.success(f"Welcome back, {user['username']}!")
+                st.experimental_rerun()
+            else:
+                st.warning("User not found. Please register.")
+                st.session_state.show_register_form = True
+
+    # The registration form, now separate from the login form
+    if st.session_state.show_register_form:
+        with st.form("register_form"):
+            st.subheader("New User Registration")
+            username = st.text_input("Username:")
+            weight = st.number_input("Current Weight (kg):", min_value=1.0)
+            register_submitted = st.form_submit_button("Register")
+            if register_submitted:
+                if username and email and weight:
+                    user_id = db.create_user(username, email, weight)
+                    if user_id:
+                        st.success("Registration successful! You can now log in.")
+                        st.session_state.show_register_form = False
+                        st.experimental_rerun()
+                    else:
+                        st.error("Registration failed. Please try again.")
+                else:
+                    st.error("Please fill in all fields.")
+
+# --- Main App Views ---
+
+def profile_view():
+    """Displays user profile and goals."""
+    user = st.session_state.user
+    if user:
+        st.header("Your Profile")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Username", user['username'])
+            st.metric("Email", user['email'])
+        with col2:
+            st.metric("Current Weight", f"{user['current_weight']} kg")
+            # Update weight form
+            st.subheader("Update Weight")
+            with st.form("update_weight_form"):
+                new_weight = st.number_input("New Weight (kg)", value=user['current_weight'], min_value=1.0)
+                update_submitted = st.form_submit_button("Update")
+                if update_submitted:
+                    if db.update_user_weight(user['email'], new_weight):
+                        user['current_weight'] = new_weight
+                        st.session_state.user = user
+                        st.success("Weight updated successfully!")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to update weight.")
+
+def log_workout_view():
+    """Form for logging a new workout."""
+    st.header("Log a New Workout")
+    with st.form("log_workout_form"):
+        workout_date = st.date_input("Date", value=date.today())
+        duration = st.number_input("Duration (in minutes)", min_value=1)
+
+        st.subheader("Exercises")
+        if 'exercises' not in st.session_state or st.session_state.view != 'log_workout':
+            st.session_state.exercises = [{}]
+
+        for i, ex in enumerate(st.session_state.exercises):
+            st.write(f"**Exercise {i+1}**")
+            cols = st.columns(3)
+            with cols[0]:
+                ex['name'] = st.text_input("Name", key=f"ex_name_{i}")
+            with cols[1]:
+                ex['sets'] = st.number_input("Sets", min_value=1, key=f"ex_sets_{i}")
+            with cols[2]:
+                ex['reps'] = st.number_input("Reps", min_value=1, key=f"ex_reps_{i}")
+            ex['weight'] = st.number_input("Weight (kg)", min_value=0.0, key=f"ex_weight_{i}")
+
+        if st.form_submit_button("Add another exercise"):
+            st.session_state.exercises.append({})
+            st.experimental_rerun()
+
+        submitted = st.form_submit_button("Log Workout")
+        if submitted:
+            if db.log_workout(st.session_state.user['user_id'], workout_date, duration, st.session_state.exercises):
+                st.success("Workout logged successfully!")
+                st.session_state.exercises = [{}] # Reset form
+            else:
+                st.error("Failed to log workout.")
+            st.experimental_rerun() # Rerun to reflect changes
+
+def history_view():
+    """Displays a user's workout history."""
+    st.header("Workout History")
+    workouts = db.get_user_workouts(st.session_state.user['user_id'])
+    if workouts:
+        st.subheader("Your Progress")
+        # TODO: Add visualization here
+        st.write("---")
+        st.subheader("Workout Details")
+        st.table(workouts)
+    else:
+        st.info("No workout history found. Log a workout to see your progress!")
+
+def leaderboard_view():
+    """Shows the friends leaderboard and allows friend management."""
+    st.header("Friends Leaderboard")
+    leaderboard_data = db.get_leaderboard(st.session_state.user['user_id'])
+    if leaderboard_data:
+        st.subheader("Ranked by weekly workout minutes")
+        st.table(leaderboard_data)
+    else:
+        st.info("No friends or workout data found. Add friends to see the leaderboard.")
+
+    st.subheader("Add a New Friend")
+    with st.form("add_friend_form"):
+        friend_email = st.text_input("Friend's Email:")
+        add_submitted = st.form_submit_button("Add Friend")
+        if add_submitted:
+            if db.add_friend(st.session_state.user['user_id'], friend_email):
+                st.success(f"{friend_email} added as a friend!")
+            else:
+                st.error("Could not add friend. Check the email address.")
+            st.experimental_rerun()
+
+def insights_view():
+    """Displays business insights using aggregate functions."""
+    st.header("Business Insights")
+    user_id = st.session_state.user['user_id']
+    
+    total_workouts = db.get_total_workouts(user_id)
+    total_duration = db.get_total_duration(user_id)
+    avg_reps = db.get_average_reps(user_id)
+    min_weight, max_weight = db.get_min_max_weight_lifted(user_id)
+
+    st.subheader("Your Fitness Journey at a Glance")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Workouts", total_workouts)
+        st.metric("Average Reps per Exercise", f"{avg_reps:.2f}" if avg_reps else "N/A")
+    with col2:
+        st.metric("Total Workout Duration", f"{total_duration} min")
+        st.metric("Weight Lifted (min/max)", f"{min_weight} kg / {max_weight} kg" if min_weight is not None else "N/A")
+
+# --- Application Sidebar and Main Loop ---
+if st.session_state.user:
+    with st.sidebar:
+        st.header(f"Hello, {st.session_state.user['username']}!")
+        st.button("Profile", on_click=set_view, args=('profile',))
+        st.button("Log Workout", on_click=set_view, args=('log_workout',))
+        st.button("History", on_click=set_view, args=('history',))
+        st.button("Leaderboard", on_click=set_view, args=('leaderboard',))
+        st.button("Insights", on_click=set_view, args=('insights',))
+        st.button("Logout", on_click=set_view, args=('login',))
+
+    if st.session_state.view == 'profile':
+        profile_view()
+    elif st.session_state.view == 'log_workout':
+        log_workout_view()
+    elif st.session_state.view == 'history':
+        history_view()
+    elif st.session_state.view == 'leaderboard':
+        leaderboard_view()
+    elif st.session_state.view == 'insights':
+        insights_view()
+    elif st.session_state.view == 'login':
+        login_page()
+else:
+    login_page()
