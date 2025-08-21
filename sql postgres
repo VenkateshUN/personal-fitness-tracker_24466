@@ -1,0 +1,65 @@
+-- SQL Schema for Personal Fitness Tracker
+
+-- Table for user profiles
+-- Stores basic user information.
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(100) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    current_weight DECIMAL(5, 2) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for friends connections
+-- Manages the many-to-many relationship between users.
+-- Ensures a friendship is unique regardless of the order of user_ids.
+CREATE TABLE friends (
+    user_id_1 UUID NOT NULL,
+    user_id_2 UUID NOT NULL,
+    PRIMARY KEY (user_id_1, user_id_2),
+    FOREIGN KEY (user_id_1) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id_2) REFERENCES users(user_id) ON DELETE CASCADE,
+    CHECK (user_id_1 < user_id_2) -- Enforces uniqueness by ordering the IDs
+);
+
+-- Table for workouts
+-- Tracks individual workout sessions.
+CREATE TABLE workouts (
+    workout_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    workout_date DATE NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- Table for exercises within a workout
+-- Stores details for each exercise performed in a workout.
+CREATE TABLE exercises (
+    exercise_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workout_id UUID NOT NULL,
+    exercise_name VARCHAR(255) NOT NULL,
+    reps INTEGER,
+    sets INTEGER,
+    weight_kg DECIMAL(6, 2),
+    FOREIGN KEY (workout_id) REFERENCES workouts(workout_id) ON DELETE CASCADE
+);
+
+-- Table for fitness goals
+-- Allows users to set and track their personal goals.
+CREATE TABLE goals (
+    goal_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    goal_type VARCHAR(50) NOT NULL, -- e.g., 'workouts_per_week', 'weight_loss'
+    target_value INTEGER NOT NULL,
+    current_value INTEGER,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    is_completed BOOLEAN DEFAULT FALSE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- Optional: Create indexes for faster queries, especially for leaderboards and history
+CREATE INDEX idx_workouts_user_id_date ON workouts (user_id, workout_date);
+CREATE INDEX idx_friends_user_id_1 ON friends (user_id_1);
+CREATE INDEX idx_friends_user_id_2 ON friends (user_id_2);
