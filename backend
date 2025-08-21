@@ -1,0 +1,293 @@
+# backend_mar.py
+
+import psycopg2
+from psycopg2 import sql
+import uuid
+from datetime import date
+
+# --- Database Configuration ---
+# TODO: Replace these with your actual PostgreSQL connection details
+DB_PARAMS = {
+    "host": "localhost",
+    "database": "personal fitness tracker",
+    "user": "postgres",
+    "password": "2121"
+}
+
+def get_db_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Error connecting to the database: {e}")
+        return None
+
+# --- CRUD Operations: Users ---
+
+def create_user(username, email, weight):
+    """Creates a new user profile."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("INSERT INTO users (username, email, current_weight) VALUES (%s, %s, %s) RETURNING user_id;"),
+                (username, email, weight)
+            )
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            return user_id
+    except psycopg2.Error as e:
+        print(f"Database error during user creation: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+    return None
+
+def get_user_by_email(email):
+    """Retrieves a user's profile by email."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT user_id, username, email, current_weight FROM users WHERE email = %s;"),
+                (email,)
+            )
+            user_data = cur.fetchone()
+            if user_data:
+                return {"user_id": user_data[0], "username": user_data[1], "email": user_data[2], "current_weight": user_data[3]}
+    except psycopg2.Error as e:
+        print(f"Database error during user retrieval: {e}")
+    finally:
+        conn.close()
+    return None
+
+def update_user_weight(email, new_weight):
+    """Updates a user's current weight."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("UPDATE users SET current_weight = %s WHERE email = %s;"),
+                (new_weight, email)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except psycopg2.Error as e:
+        print(f"Database error during weight update: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+    return False
+
+# --- CRUD Operations: Workouts and Exercises ---
+
+def log_workout(user_id, workout_date, duration_minutes, exercises):
+    """Logs a new workout and its associated exercises."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            # Insert the workout
+            cur.execute(
+                sql.SQL("INSERT INTO workouts (user_id, workout_date, duration_minutes) VALUES (%s, %s, %s) RETURNING workout_id;"),
+                (user_id, workout_date, duration_minutes)
+            )
+            workout_id = cur.fetchone()[0]
+
+            # Insert all exercises for this workout
+            for ex in exercises:
+                cur.execute(
+                    sql.SQL("INSERT INTO exercises (workout_id, exercise_name, reps, sets, weight_kg) VALUES (%s, %s, %s, %s, %s);"),
+                    (workout_id, ex["name"], ex["reps"], ex["sets"], ex["weight"])
+                )
+            conn.commit()
+            return True
+    except psycopg2.Error as e:
+        print(f"Database error during workout logging: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+    return False
+
+def get_user_workouts(user_id):
+    """Retrieves all workouts and exercises for a given user."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("""
+                    SELECT w.workout_date, w.duration_minutes, e.exercise_name, e.reps, e.sets, e.weight_kg
+                    FROM workouts w
+                    JOIN exercises e ON w.workout_id = e.workout_id
+                    WHERE w.user_id = %s
+                    ORDER BY w.workout_date DESC;
+                """),
+                (user_id,)
+            )
+            return cur.fetchall()
+    except psycopg2.Error as e:
+        print(f"Database error fetching workouts: {e}")
+    finally:
+        conn.close()
+    return []
+
+# --- CRUD Operations: Friends and Leaderboard ---
+
+def add_friend(user_id, friend_email):
+    """Adds a friend connection between two users."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            # Find the friend's user ID
+            cur.execute(
+                sql.SQL("SELECT user_id FROM users WHERE email = %s;"),
+                (friend_email,)
+            )
+            friend_data = cur.fetchone()
+            if not friend_data:
+                print(f"Friend with email {friend_email} not found.")
+                return False
+            friend_id = friend_data[0]
+
+            # Ensure the order of user IDs to prevent duplicate entries
+            id1 = min(user_id, friend_id)
+            id2 = max(user_id, friend_id)
+
+            cur.execute(
+                sql.SQL("INSERT INTO friends (user_id_1, user_id_2) VALUES (%s, %s);"),
+                (id1, id2)
+            )
+            conn.commit()
+            return True
+    except psycopg2.IntegrityError:
+        print("Friendship already exists.")
+        conn.rollback()
+        return False
+    except psycopg2.Error as e:
+        print(f"Database error adding friend: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+    return False
+
+def get_leaderboard(user_id):
+    """Retrieves leaderboard data for a user's friends based on weekly workout minutes."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("""
+                    WITH user_friends AS (
+                        SELECT user_id_2 AS friend_id FROM friends WHERE user_id_1 = %s
+                        UNION
+                        SELECT user_id_1 AS friend_id FROM friends WHERE user_id_2 = %s
+                    ),
+                    weekly_minutes AS (
+                        SELECT user_id, SUM(duration_minutes) as total_minutes
+                        FROM workouts
+                        WHERE workout_date >= DATE_TRUNC('week', NOW())
+                        GROUP BY user_id
+                    )
+                    SELECT u.username, COALESCE(wm.total_minutes, 0) AS weekly_minutes
+                    FROM users u
+                    LEFT JOIN weekly_minutes wm ON u.user_id = wm.user_id
+                    WHERE u.user_id IN (SELECT friend_id FROM user_friends) OR u.user_id = %s
+                    ORDER BY weekly_minutes DESC;
+                """),
+                (user_id, user_id, user_id)
+            )
+            return cur.fetchall()
+    except psycopg2.Error as e:
+        print(f"Database error fetching leaderboard: {e}")
+    finally:
+        conn.close()
+    return []
+
+# --- Business Insights Queries (Analytics) ---
+
+def get_total_workouts(user_id):
+    """Returns the total number of workouts for a user (COUNT)."""
+    conn = get_db_connection()
+    if conn is None: return 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM workouts WHERE user_id = %s;"),
+                (user_id,)
+            )
+            return cur.fetchone()[0]
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+    finally:
+        conn.close()
+    return 0
+
+def get_total_duration(user_id):
+    """Returns the total duration of all workouts for a user (SUM)."""
+    conn = get_db_connection()
+    if conn is None: return 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT SUM(duration_minutes) FROM workouts WHERE user_id = %s;"),
+                (user_id,)
+            )
+            return cur.fetchone()[0] or 0
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+    finally:
+        conn.close()
+    return 0
+
+def get_average_reps(user_id):
+    """Returns the average reps across all exercises for a user (AVERAGE)."""
+    conn = get_db_connection()
+    if conn is None: return 0.0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("""
+                    SELECT AVG(e.reps)
+                    FROM exercises e
+                    JOIN workouts w ON e.workout_id = w.workout_id
+                    WHERE w.user_id = %s AND e.reps IS NOT NULL;
+                """),
+                (user_id,)
+            )
+            result = cur.fetchone()[0]
+            return float(result) if result is not None else 0.0
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+    finally:
+        conn.close()
+    return 0.0
+
+def get_min_max_weight_lifted(user_id):
+    """Returns the minimum and maximum weight lifted by a user (MIN, MAX)."""
+    conn = get_db_connection()
+    if conn is None: return (None, None)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("""
+                    SELECT MIN(e.weight_kg), MAX(e.weight_kg)
+                    FROM exercises e
+                    JOIN workouts w ON e.workout_id = w.workout_id
+                    WHERE w.user_id = %s AND e.weight_kg IS NOT NULL;
+                """),
+                (user_id,)
+            )
+            result = cur.fetchone()
+            return (result[0], result[1])
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+    finally:
+        conn.close()
+    return (None, None)
